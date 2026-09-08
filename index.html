@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KGPT Panel</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --border: #262b36;
+    --text: #e6e9ef; --dim: #8b93a3; --accent: #5b8cff;
+    --green: #3fb950; --red: #f85149; --amber: #d29922;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.5 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  header { padding: 14px 20px; border-bottom: 1px solid var(--border);
+           display: flex; align-items: center; gap: 12px; }
+  header h1 { font-size: 18px; margin: 0; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+  header .sub { color: var(--dim); font-size: 13px; }
+  main { padding: 20px; max-width: 1000px; margin: 0 auto; }
+  .controls { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+  .controls textarea { flex: 1; min-width: 300px; height: 64px; resize: vertical;
+       background: var(--panel); border: 1px solid var(--border); color: var(--text);
+       border-radius: 8px; padding: 10px; font: inherit; }
+  .controls select { background: var(--panel); border: 1px solid var(--border);
+       color: var(--text); border-radius: 8px; padding: 9px 12px; font: inherit; }
+  button.go { background: var(--accent); color: #fff; border: 0; border-radius: 8px;
+       padding: 11px 20px; font: inherit; cursor: pointer; }
+  button.stop { background: var(--red); color: #fff; border: 0; border-radius: 6px;
+       padding: 4px 10px; font-size: 12px; cursor: pointer; }
+  .task { margin-top: 16px; background: var(--panel); border: 1px solid var(--border);
+       border-radius: 10px; overflow: hidden; }
+  .task-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+       border-bottom: 1px solid var(--border); }
+  .badge { font-size: 12px; padding: 2px 9px; border-radius: 4px; background: #1d2a45;
+       color: var(--accent); font-weight: 600; }
+  .badge.qwen { background: #3a2d16; color: var(--amber); }
+  .status { font-size: 12px; color: var(--dim); }
+  .status.running { color: var(--green); }
+  .status.failed { color: var(--red); }
+  .status.stopped { color: var(--amber); }
+  .task-id { font-size: 12px; color: var(--dim); }
+  .spacer { flex: 1; }
+  .prompt-line { font-size: 12px; color: var(--dim); padding: 8px 14px 0; }
+  pre { margin: 0; padding: 12px 14px; white-space: pre-wrap; word-break: break-word;
+       font: 13px/1.6 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+       max-height: 420px; overflow-y: auto; }
+  .meta { color: var(--amber); }
+  .raw { color: var(--dim); }
+  .cmd { color: var(--green); }
+  .out { color: var(--dim); }
+  .reply { display: flex; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--border); }
+  .reply input { flex: 1; background: var(--bg); border: 1px solid var(--border);
+       color: var(--text); border-radius: 6px; padding: 8px 10px; font: inherit; }
+  .reply button { background: var(--accent); color: #fff; border: 0; border-radius: 6px;
+       padding: 8px 14px; font: inherit; cursor: pointer; }
+</style>
+</head>
+<body>
+<header><span class="dot"></span><h1>KGPT Panel</h1><span class="sub">本地子 agent 管理面板</span></header>
+<main>
+  <div class="controls">
+    <select id="provider">
+      <option value="KGPT">KGPT · glm-5.3-flash</option>
+      <option value="Qwen">Qwen · qwen3.8-flash</option>
+    </select>
+    <textarea id="prompt" placeholder="输入任务描述，例如：测试 /Users/macintoshhd/video2text 项目"></textarea>
+    <button class="go" onclick="dispatch()">派发子 agent</button>
+  </div>
+  <div id="tasks"></div>
+</main>
+<script>
+const state = {};
+
+async function dispatch() {
+  const provider = document.getElementById('provider').value;
+  const prompt = document.getElementById('prompt').value.trim();
+  if (!prompt) { alert('请输入任务描述'); return; }
+  try {
+    await fetch('/api/run', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider, prompt })
+    });
+  } catch (e) { alert('派发失败: ' + e); return; }
+  document.getElementById('prompt').value = '';
+}
+
+async function stop(id) {
+  await fetch('/api/stop/' + id, { method: 'POST' });
+}
+
+async function reply(id) {
+  const input = document.getElementById('reply-' + id);
+  const message = input.value.trim();
+  if (!message) return;
+  input.value = '';
+  try {
+    await fetch('/api/reply/' + id, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message })
+    });
+  } catch (e) { alert('回复失败: ' + e); }
+}
+
+async function poll() {
+  let tasks = [];
+  try {
+    const r = await fetch('/api/tasks');
+    tasks = (await r.json()).tasks;
+  } catch (e) { return; }
+  const seen = new Set();
+  for (const t of tasks) {
+    seen.add(t.id);
+    renderTask(t);
+  }
+  for (const id of Object.keys(state)) {
+    if (!seen.has(id)) { state[id].el.remove(); delete state[id]; }
+  }
+}
+
+function renderTask(t) {
+  let s = state[t.id];
+  if (!s) {
+    const el = document.createElement('div');
+    el.className = 'task';
+    el.innerHTML =
+      '<div class="task-head">' +
+        '<span class="badge ' + (t.provider === 'Qwen' ? 'qwen' : '') + '">' + t.provider + '</span>' +
+        '<span class="task-id">#' + t.id + '</span>' +
+        '<span class="status ' + t.status + '">' + t.status + '</span>' +
+        '<span class="spacer"></span>' +
+        '<button class="stop" onclick="stop(\'' + t.id + '\')">终止</button>' +
+      '</div>' +
+      '<div class="prompt-line">' + escapeHtml(t.prompt) + '</div>' +
+      '<pre class="out"></pre>' +
+      '<div class="reply">' +
+        '<input type="text" id="reply-' + t.id + '" placeholder="回复子 agent（带记忆续接）..." onkeydown="if(event.key===\'Enter\')reply(\'' + t.id + '\')">' +
+        '<button onclick="reply(\'' + t.id + '\')">发送</button>' +
+      '</div>';
+    document.getElementById('tasks').appendChild(el);
+    s = state[t.id] = { el, pre: el.querySelector('.out'), last: 0, buf: '' };
+  }
+  const st = s.el.querySelector('.status');
+  st.className = 'status ' + t.status;
+  st.textContent = t.status;
+
+  const nearBottom = s.pre.scrollTop + s.pre.clientHeight >= s.pre.scrollHeight - 30;
+  for (let i = s.last; i < t.events.length; i++) {
+    const ev = t.events[i];
+    if (ev.type === 'content') {
+      s.buf += ev.content;
+    } else if (ev.type === 'tool_use') {
+      // 工具调用：只显示一个极简标记，不显示命令和输出
+      flush(s, '\n🔧 ' + (ev.name || '工具') + '\n', 'meta');
+    }
+    // tool_result / turn_usage / metadata / session_capture / done / raw 全部省略
+  }
+  s.last = t.events.length;
+  if (s.buf) { append(s, s.buf, ''); s.buf = ''; }
+  if (nearBottom) { s.pre.scrollTop = s.pre.scrollHeight; }
+}
+
+function flush(s, text, cls) {
+  if (s.buf) { append(s, s.buf, ''); s.buf = ''; }
+  append(s, text, cls);
+}
+
+function append(s, text, cls) {
+  const span = document.createElement('span');
+  if (cls) span.className = cls;
+  span.textContent = text;
+  s.pre.appendChild(span);
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+setInterval(poll, 700);
+poll();
+</script>
+</body>
+</html>
